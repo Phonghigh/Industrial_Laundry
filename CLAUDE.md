@@ -280,38 +280,77 @@ cd backend && python scripts/seed.py
 
 ---
 
+## Navigation
+
+Before writing any code, read these files:
+
+| File | Read when |
+|------|-----------|
+| [`architecture/README.md`](architecture/README.md) | Changing how something fundamentally works |
+| [`architecture/adr/`](architecture/adr/) | Before overriding an existing decision |
+| [`docs/conventions.md`](docs/conventions.md) | Before writing any new file |
+| [`docs/patterns.md`](docs/patterns.md) | Before scaffolding any new endpoint, model, or component |
+| [`docs/workflows.md`](docs/workflows.md) | Before running dev commands |
+| [`docs/event-schema.md`](docs/event-schema.md) | Before touching event types |
+| [`docs/failure-modes.md`](docs/failure-modes.md) | Before changing error handling or degradation behaviour |
+
+## Custom Commands
+
+| Command | Purpose |
+|---------|---------|
+| `/new-event-type` | Add a new event type end-to-end |
+| `/new-endpoint` | Scaffold a new API endpoint |
+| `/new-model` | Create model + Alembic migration |
+| `/new-alert` | Add an alert to the SSE stream + dashboard |
+| `/check-patterns` | Verify code follows project conventions |
+| `/seed-dev` | Reset and reseed dev database |
+| `/adr` | Create a new Architecture Decision Record |
+
 ## Claude Code Guidelines
 
-### When writing backend code:
-- Use `async`/`await` throughout — no synchronous DB calls
-- All events go through Redis Streams first, PostgreSQL second
-- Every event POST must validate idempotency_key and return 202 (not 201)
-- Include `tenant_id` in every query — never omit it
-- Use `structlog` for structured logging, not `print`
+### When writing backend code
 
-### When writing station-app code:
-- **Always** save to IndexedDB before any network call
-- UI must confirm to worker **before** network response
-- No loading spinners that block interaction — optimistic UI only
-- Keep bundle size minimal — these are cheap Android tablets
+- Use `async`/`await` throughout — no synchronous DB calls ever
+- All events go through Redis Streams first, PostgreSQL second (see ADR-003)
+- Every event POST returns `202 Accepted` — not `201`
+- Every DB query includes `tenant_id` filter — no exceptions (see ADR-006)
+- Use `structlog` for structured logging — not `print`, not `logging`
+- Catch only exceptions you can handle; let others propagate
 
-### When writing dashboard code:
-- SSE over WebSocket (simpler, good enough for read-only stream)
-- Show operational state, not raw data — derive meaning
-- Bottleneck and stuck batch alerts are primary, charts are secondary
+### When writing station-app code
 
-### When making architecture decisions:
-- Reliability > Features
-- Worker friction reduction > Technical elegance
-- Offline capability is non-negotiable
-- Voice is augmentation, not primary input
+- **IndexedDB first, always.** `enqueue()` runs before any `fetch()` — no exceptions (see ADR-002)
+- Worker sees confirmation **before** network response — optimistic UI
+- No blocking spinners. If loading state is needed, it must be non-blocking
+- All interactive elements ≥ 64px height — wet hands, gloves
+- Station app has one screen. No routing, no menus, no navigation
 
-### Do NOT:
+### When writing dashboard code
+
+- SSE, not WebSocket — dashboard is read-only (see ADR-004)
+- Each SSE event is a full snapshot — replace state, don't merge
+- Show operational state in plain language — not raw counts
+- Alerts (stuck batch, inactive station) are primary; charts are secondary
+
+### When making architecture decisions
+
+1. Read the relevant ADR first — the decision may already be made
+2. Reliability > Features — every time
+3. Offline capability is non-negotiable — no feature degrades station function
+4. Voice is augmentation only (see ADR-008) — never make it required
+5. If no ADR exists, run `/adr` to document the decision before implementing
+
+### Do NOT
+
 - Build a general-purpose ERP or inventory system
-- Add authentication complexity to station devices (shared, always-on)
-- Use ORM lazy loading (explicit eager loads only)
-- Add animations or transitions to station app (latency perception)
+- Add authentication to station devices (see ADR-005)
+- Use ORM lazy loading — always explicit `joinedload` or separate queries
+- Add animations or transitions to station app — latency perception matters
 - Make any feature that requires a worker to navigate a menu
+- Write to `operational_events` with UPDATE or DELETE — insert only
+- Omit `tenant_id` from any database query — it is always required
+- Use `print()` or Python's `logging` — use `structlog`
+- Return raw SQLAlchemy objects from endpoints — always use Pydantic schemas
 
 ---
 
