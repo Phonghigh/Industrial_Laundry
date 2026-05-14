@@ -54,8 +54,8 @@ curl http://localhost:8000/health
 | Service | URL | Credentials |
 |---------|-----|-------------|
 | API (dev docs) | http://localhost:8000/docs | — |
-| Station PWA | http://localhost:5173 | — |
-| Manager Dashboard | http://localhost:5174 | — |
+| Station PWA | http://localhost:3002 | — |
+| Manager Dashboard | http://localhost:3001 | — |
 | Grafana | http://localhost:3000 | admin / admin |
 | Prometheus | http://localhost:9090 | — |
 | PostgreSQL | localhost:5432 | postgres / postgres |
@@ -176,6 +176,54 @@ npm run dev
 | Dashboard | React + Vite | Real-time via SSE |
 | Observability | Grafana + Loki + Prometheus | Operational visibility is product-critical |
 | Container | Docker Compose | Single-command factory deployment |
+
+---
+
+## Current status
+
+### What's built
+
+| Area | Component | Status |
+|------|-----------|--------|
+| **Backend** | Event ingest (`POST /api/v1/events`) with Redis primary + PostgreSQL fallback | Done |
+| | SSE stream (`GET /api/v1/manager/overview`) — full snapshot every 15s | Done |
+| | Batch CRUD (`GET/POST /api/v1/batches`) | Done |
+| | Stations list (`GET /api/v1/stations`) | Done |
+| | Alerts snapshot (`GET /api/v1/alerts`) | Done |
+| | Alert engine — stuck batches, inactive stations, hourly throughput | Done |
+| | Batch lifecycle — auto-marks `completed` when last station done | Done |
+| | Redis Streams consumer with PEL recovery (`xautoclaim`) | Done |
+| | Isolated worker service (separate Docker container) | Done |
+| | Idempotency — duplicate events silently ignored via `UNIQUE` constraint | Done |
+| | Multi-tenant middleware — resolves `tenant_id` from header or env | Done |
+| | Prometheus metrics — ingest latency, stuck batches, inactive stations, ASR confidence | Done |
+| | Alembic migration — initial schema (batches, stations, operational_events) | Done |
+| **Station App** | IndexedDB event queue — persists across device reboots | Done |
+| | Background sync engine — retries every 3s, max 10 retries | Done |
+| | QR scanner — `jsQR` decoding, no external service | Done |
+| | Voice assist — Web Speech API, Vietnamese + English, 0.75 confidence threshold | Done |
+| | Big-button UI — all interactive elements ≥ 64px, one-screen, no navigation | Done |
+| | `VITE_STATION_ID` validation — clear startup error if missing or not a UUID | Done |
+| **Dashboard** | SSE client with native auto-reconnect | Done |
+| | Stuck batch alerts | Done |
+| | Station throughput bar chart (Recharts) | Done |
+| | Bottleneck panel + inactive stations list | Done |
+| **Infrastructure** | Full Docker Compose stack — API, worker, PostgreSQL, Redis, Grafana, Loki, Prometheus, Promtail, nginx | Done |
+| | Nginx reverse proxy — SSE-safe headers, `/metrics` restricted to private IPs | Done |
+| | Grafana dashboard — event ingest rate, stuck batches gauge, inactive stations gauge | Done |
+| | Dev seed — 7 stations + 5 sample batches with events | Done |
+| | End-to-end demo script (`scripts/demo.ps1`) | Done |
+
+### What's missing
+
+| Gap | Impact | Notes |
+|-----|--------|-------|
+| **No tests** | High | No unit or integration tests anywhere — backend, station app, or dashboard. The riskiest untested paths are `alert_engine.py`, `batch_lifecycle.py`, and `stream_consumer.py`. |
+| **No `.env.example`** | Medium | New contributors have no reference for required env vars. Copy `docs/workflows.md` manually or add a `.env.example` at the repo root and in `backend/`. |
+| **`VITE_STATION_ID` hardcoded in `docker-compose.yml`** | Medium | All station containers share the same placeholder UUID. A real deployment needs one compose override file per physical station. |
+| **Single Alembic migration** | Low | Only `001_initial_schema.py` exists. Fine for now, but any schema change needs a new migration file — `Base.metadata.create_all` must not be used outside dev. |
+| **No Grafana alerting rules** | Low | Dashboards visualise the metrics but no alert notifications are configured (email, Slack, PagerDuty). Thresholds are documented in `ARCHITECTURE.md`. |
+| **Multi-tenant `tenant_id` hardcoded in consumer** | Low | `stream_consumer.py` uses a hardcoded default tenant UUID. Works for a single-factory deployment; needs `tenant_id` forwarded through the Redis stream payload for multi-factory. |
 
 ---
 
@@ -592,14 +640,20 @@ Industrial_Laundry/
 
 ## Adding a new feature
 
-```
-New event type a worker creates?      → /new-event-type
-New API endpoint?                     → /new-endpoint  (read docs/patterns.md first)
-New database table?                   → /new-model     (creates model + Alembic migration)
-New manager dashboard alert/metric?   → /new-alert
-Non-obvious architecture choice?      → /adr           (document before you implement)
-Not sure if code follows conventions? → /check-patterns
-```
+**New event type a worker creates?**
+Add the type to `event_type` union in `station-app/src/services/localQueue.ts`, add it to the regex in `backend/app/schemas/event.py`, add a `BigButton` variant, then document it in `docs/event-schema.md`.
+
+**New API endpoint?**
+Read `docs/patterns.md` first — it has the canonical `APIRouter` template. Add the router file under `backend/app/api/v1/endpoints/`, register it in `router.py`.
+
+**New database table?**
+Create the SQLAlchemy model under `backend/app/models/`, always inherit `TenantMixin` and `TimestampMixin`, then write an Alembic migration in `backend/alembic/versions/`. See `docs/patterns.md` for the migration template.
+
+**New manager alert or metric?**
+Add a private method to `AlertEngine` in `backend/app/services/alert_engine.py`, expose it from `compute_operational_state()`, add the field to `OperationalState` in `dashboard/src/types/index.ts`, and handle it in the dashboard component.
+
+**Non-obvious architecture choice?**
+Write a short decision doc in `docs/` (what you chose, what you rejected, why) before you start coding. Future contributors will thank you.
 
 ---
 
@@ -624,13 +678,13 @@ Not sure if code follows conventions? → /check-patterns
 
 ## Design decisions
 
-Key architecture decisions are documented as ADRs in [`architecture/adr/`](architecture/adr/). Read before overriding any existing decision.
+Key decisions are documented as ADRs in `architecture/adr/` (local only, not pushed to the repo). Read the relevant ADR before changing how something fundamentally works.
 
-| Decision | ADR |
-|----------|-----|
-| IndexedDB-first on station devices | ADR-002 |
-| Redis Streams as event bus | ADR-003 |
-| SSE (not WebSocket) for dashboard | ADR-004 |
-| No authentication on station devices | ADR-005 |
-| `tenant_id` on every query | ADR-006 |
-| Voice as augmentation only | ADR-008 |
+| Decision | Rule |
+|----------|------|
+| IndexedDB-first on station devices | `enqueue()` always runs before any `fetch()` — no exceptions |
+| Redis Streams as event bus | API never writes directly to PostgreSQL on the hot path |
+| SSE (not WebSocket) for dashboard | Dashboard is read-only — SSE is simpler and sufficient |
+| No auth on station devices | Shared physical devices at fixed mounts; no login friction |
+| `tenant_id` on every query | Every DB query must include a `tenant_id` filter — no exceptions |
+| Voice as augmentation only | Voice may fail silently; button tap is always the primary path |
