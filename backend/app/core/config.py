@@ -1,4 +1,8 @@
+import uuid
+
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+DEFAULT_TENANT_ID = uuid.UUID("00000000-0000-0000-0000-000000000001")
 
 
 class Settings(BaseSettings):
@@ -23,6 +27,20 @@ class Settings(BaseSettings):
     stuck_batch_threshold_mins: int = 30
     station_inactivity_threshold_mins: int = 15
     asr_confidence_min: float = 0.75
+
+    # CORS
+    # Production: CORS_ORIGINS='["http://dashboard.factory.local"]'
+    cors_origins: list[str] = ["*"]
+
+    # Multi-tenancy
+    # Single-factory deployments: set TENANT_ID to the factory's UUID in .env.
+    # Multi-tenant SaaS: leave unset; use X-Tenant-ID header per request.
+    tenant_id: uuid.UUID = DEFAULT_TENANT_ID
+
+    # Consumer isolation
+    # False (default/production): consumer runs as a separate `worker` Docker service.
+    # True (dev convenience): consumer runs as an asyncio task inside the API process.
+    run_consumer_in_process: bool = False
 
 
 settings = Settings()

@@ -15,6 +15,7 @@ from fastapi import APIRouter, Depends, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.api.deps import get_tenant_id
 from app.core.database import get_db
 from app.models.batch import Batch
 from app.schemas.batch import BatchCreate, BatchRead
@@ -25,7 +26,7 @@ router = APIRouter()
 
 @router.get("", response_model=list[BatchRead])
 async def list_batches(
-    tenant_id: uuid.UUID,   # extract from middleware in production
+    tenant_id: uuid.UUID = Depends(get_tenant_id),   # resolved by TenantMiddleware
     db: AsyncSession = Depends(get_db),
 ) -> list[BatchRead]:
     result = await db.execute(
@@ -209,25 +210,3 @@ stuck_batch_count = Gauge(
 ```
 
 Rule: All metric names prefixed with `laundry_`. Include unit in name (`_seconds`, `_total`, `_count`).
-
----
-
-## Pattern: New Custom Claude Command
-
-Create `.claude/commands/your-command.md`. The file IS the prompt — write it as if telling Claude what to do:
-
-```markdown
-# /your-command
-
-[Description of what this command does]
-
-## What to do
-
-1. [Step one]
-2. [Step two]
-
-## Constraints
-
-- Must follow pattern from `docs/patterns.md`
-- Must include tenant_id
-```

@@ -1,14 +1,25 @@
 services:
+
+  # ── API (hot reload) ───────────────────────────────────────────────────────
+  # Dev: consumer runs inside API process. No separate worker container needed.
   api:
     build:
       context: ../backend
     volumes:
-      - ../backend/app:/app/app   # hot reload
+      - ../backend/app:/app/app   # hot reload — code changes reflected immediately
     environment:
       DEBUG: "true"
       ENVIRONMENT: development
+      RUN_CONSUMER_IN_PROCESS: "true"
     command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
 
+  # ── Worker suppressed in dev ───────────────────────────────────────────────
+  # Consumer runs inside `api` above. Disable worker so it doesn't double-consume.
+  worker:
+    profiles:
+      - worker-isolated   # opt-in: docker compose --profile worker-isolated up worker
+
+  # ── Expose infra ports for local tooling ──────────────────────────────────
   db:
     ports:
       - "5432:5432"
@@ -16,3 +27,19 @@ services:
   redis:
     ports:
       - "6379:6379"
+
+  # ── Frontend apps (hot reload) ─────────────────────────────────────────────
+  dashboard:
+    volumes:
+      - ../dashboard:/app
+      - /app/node_modules
+    environment:
+      - VITE_API_BASE=http://localhost:8000
+
+  station:
+    volumes:
+      - ../station-app:/app
+      - /app/node_modules
+    environment:
+      - VITE_API_BASE=http://localhost:8000
+      - VITE_STATION_ID=00000000-0000-0000-0000-000000000010

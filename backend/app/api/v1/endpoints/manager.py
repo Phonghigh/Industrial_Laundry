@@ -1,9 +1,11 @@
 import asyncio
 import json
+import uuid
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Depends
 from fastapi.responses import StreamingResponse
 
+from app.api.deps import get_tenant_id
 from app.core.config import settings
 from app.services.alert_engine import AlertEngine
 
@@ -14,9 +16,11 @@ router = APIRouter()
     "/overview",
     summary="SSE stream of real-time operational state for manager dashboard",
 )
-async def operational_overview() -> StreamingResponse:
+async def operational_overview(
+    tenant_id: uuid.UUID = Depends(get_tenant_id),
+) -> StreamingResponse:
     async def event_stream():
-        alert_engine = AlertEngine()
+        alert_engine = AlertEngine(tenant_id=tenant_id)
         while True:
             state = await alert_engine.compute_operational_state()
             payload = json.dumps({"type": "operational_state", **state})

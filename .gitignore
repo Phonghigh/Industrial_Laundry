@@ -29,5 +29,10 @@ infra/redis_data/
 .DS_Store
 Thumbs.db
 
-.claude
+.claude/
 architecture/
+
+# AI tool artifacts
+.agent.md
+*.agent.md
+memory/

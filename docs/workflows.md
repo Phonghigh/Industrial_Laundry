@@ -2,8 +2,42 @@
 
 ## Starting the stack
 
+### Local dev (recommended — no Docker build)
+
+Only infra runs in Docker (Postgres, Redis, Grafana, Prometheus, Loki).
+API and frontends start natively — no image build, no slow pull.
+
 ```bash
-# Full stack (dev mode, hot reload)
+# 1. Start infra only
+docker compose -f infra/docker-compose.infra.yml up -d
+
+# 2. Apply migrations + seed
+bash scripts/migrate.sh
+cd backend && python scripts/seed.py
+
+# 3. Start API (new terminal)
+cd backend && uvicorn app.main:app --reload --port 8000
+
+# 4. Start Dashboard (new terminal)
+cd dashboard && npm run dev
+
+# 5. Start Station app (new terminal)
+cd station-app && npm run dev
+```
+
+In this mode `RUN_CONSUMER_IN_PROCESS` defaults to `false` — the stream consumer
+runs as an asyncio task inside uvicorn automatically when `ENVIRONMENT=development`.
+Set `RUN_CONSUMER_IN_PROCESS=true` in your shell if you need to force it:
+
+```bash
+# backend terminal
+RUN_CONSUMER_IN_PROCESS=true uvicorn app.main:app --reload --port 8000
+```
+
+### Full Docker stack (production-like)
+
+```bash
+# Full stack (API + frontends built in Docker)
 docker compose -f infra/docker-compose.yml -f infra/docker-compose.dev.yml up -d
 
 # Check all services healthy

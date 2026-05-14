@@ -33,7 +33,7 @@ Each batch of laundry moves through stations. Each station transition = 1 operat
 | Event Bus | Redis Streams | Buffering, replay, async decoupling |
 | Database | PostgreSQL 16 | Append-only events, JSONB metadata |
 | Station App | PWA (React + Vite) | No app install, offline-first via IndexedDB |
-| Dashboard | React + Vite | Real-time via WebSocket/SSE |
+| Dashboard | React + Vite | Real-time via SSE |
 | Observability | Grafana + Loki + Prometheus | Operational visibility is product-critical |
 | Container | Docker Compose | Single-command factory deployment |
 
@@ -90,13 +90,13 @@ Tenant → Factory → Stations → Devices → Workers
 
 ```
 Industrial_Laundry/
-├── CLAUDE.md                        # ← You are here
-├── .claude/settings.json            # Claude Code permissions & hooks
+├── ARCHITECTURE.md                  # Architecture and dev guidelines
 ├── docs/
-│   ├── architecture.md              # Deep architecture decisions
 │   ├── event-schema.md              # All event types & payloads
 │   ├── failure-modes.md             # Failure analysis
-│   └── api.md                       # API reference
+│   ├── conventions.md               # Naming and coding conventions
+│   ├── patterns.md                  # Canonical code patterns
+│   └── workflows.md                 # Dev workflows
 ├── backend/                         # FastAPI service
 │   ├── app/
 │   │   ├── main.py                  # App factory
@@ -123,12 +123,14 @@ Industrial_Laundry/
 │   │   │   └── station.py
 │   │   ├── services/
 │   │   │   ├── event_processor.py   # Business logic for events
+│   │   │   ├── batch_lifecycle.py   # Batch status transitions
 │   │   │   └── alert_engine.py      # Stuck batch / inactivity detection
 │   │   ├── workers/
-│   │   │   └── stream_consumer.py   # Redis Streams consumer
+│   │   │   ├── stream_consumer.py   # Redis Streams consumer
+│   │   │   └── consumer_main.py     # Worker service entrypoint
 │   │   └── middleware/
 │   │       ├── tenant.py            # Tenant extraction
-│   │       └── observability.py     # OpenTelemetry instrumentation
+│   │       └── observability.py     # Prometheus instrumentation
 │   ├── tests/
 │   │   ├── unit/
 │   │   └── integration/
@@ -141,8 +143,8 @@ Industrial_Laundry/
 │   │   ├── services/
 │   │   │   ├── localQueue.ts        # IndexedDB event queue
 │   │   │   ├── syncEngine.ts        # Background sync + retry
-│   │   │   └── voiceAssist.ts       # ASR (augmentation, not primary)
-│   │   ├── hooks/
+│   │   │   ├── deviceConfig.ts      # Station ID validation
+│   │   │   └── voiceAssist.ts       # ASR (augmentation only, never required)
 │   │   ├── stores/                  # Zustand state
 │   │   └── types/
 │   ├── public/
@@ -153,7 +155,6 @@ Industrial_Laundry/
 │   │   ├── components/              # BottleneckPanel, StuckBatchAlert, ThroughputMeter
 │   │   ├── services/
 │   │   │   └── sseClient.ts         # SSE connection
-│   │   ├── hooks/
 │   │   ├── stores/
 │   │   └── types/
 │   ├── package.json
@@ -161,13 +162,15 @@ Industrial_Laundry/
 ├── infra/
 │   ├── docker-compose.yml           # Production stack
 │   ├── docker-compose.dev.yml       # Dev overrides
+│   ├── docker-compose.infra.yml     # Infrastructure only
 │   ├── grafana/
 │   ├── prometheus/
-│   ├── loki/
-│   └── nginx/                       # Reverse proxy config
+│   ├── nginx/
+│   └── promtail/
 └── scripts/
     ├── seed.py                      # Dev data seeder
-    └── migrate.sh                   # DB migration runner
+    ├── migrate.sh                   # DB migration runner
+    └── demo.ps1                     # End-to-end demo
 ```
 
 ---
@@ -180,15 +183,14 @@ Ingest an operational event from a station device.
 ```json
 // Request
 {
-  "batch_id": "BATCH_2041",
-  "station_id": "station_drying_01",
-  "event_type": "completed",          // started | completed | issue_flagged | skipped
+  "batch_id": "3fa85f64-5717-4562-b3fc-2c963f66afa6",
+  "station_id": "3fa85f64-5717-4562-b3fc-2c963f66afa7",
+  "event_type": "completed",
   "device_id": "device_android_003",
-  "idempotency_key": "uuid-v4",
+  "idempotency_key": "3fa85f64-5717-4562-b3fc-2c963f66afa8",
   "timestamp": "2026-05-10T13:22:11Z",
   "metadata": {
-    "asr_confidence": 0.94,           // if voice-triggered
-    "issue_code": null
+    "asr_confidence": 0.94
   }
 }
 
@@ -200,7 +202,6 @@ Ingest an operational event from a station device.
 Server-Sent Events stream for dashboard.
 
 ```json
-// Event: operational_state
 {
   "type": "operational_state",
   "bottlenecks": [{ "station": "drying", "queue_depth": 12, "avg_wait_mins": 38 }],
@@ -215,14 +216,12 @@ Server-Sent Events stream for dashboard.
 ## Database Schema (Core)
 
 ```sql
--- All tables include tenant_id for multi-tenant isolation
-
 CREATE TABLE batches (
   id            UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   tenant_id     UUID NOT NULL,
   batch_code    VARCHAR(50) UNIQUE NOT NULL,
   customer_id   UUID,
-  status        VARCHAR(20) DEFAULT 'in_progress',  -- in_progress | completed | stuck
+  status        VARCHAR(20) DEFAULT 'in_progress',
   created_at    TIMESTAMPTZ DEFAULT NOW()
 );
 
@@ -238,17 +237,17 @@ CREATE TABLE operational_events (
   tenant_id        UUID NOT NULL,
   batch_id         UUID REFERENCES batches(id),
   station_id       UUID REFERENCES stations(id),
-  event_type       VARCHAR(30) NOT NULL,      -- started | completed | issue_flagged
+  event_type       VARCHAR(30) NOT NULL,
   device_id        VARCHAR(100),
-  idempotency_key  UUID UNIQUE NOT NULL,       -- prevent duplicate on retry
+  idempotency_key  UUID UNIQUE NOT NULL,
   ts               TIMESTAMPTZ NOT NULL,
   sync_status      VARCHAR(20) DEFAULT 'synced',
   metadata         JSONB DEFAULT '{}'
 );
 
-CREATE INDEX idx_events_batch_ts ON operational_events(batch_id, ts DESC);
+CREATE INDEX idx_events_batch_ts   ON operational_events(batch_id, ts DESC);
 CREATE INDEX idx_events_station_ts ON operational_events(station_id, ts DESC);
-CREATE INDEX idx_events_tenant ON operational_events(tenant_id);
+CREATE INDEX idx_events_tenant     ON operational_events(tenant_id);
 ```
 
 ---
@@ -257,9 +256,9 @@ CREATE INDEX idx_events_tenant ON operational_events(tenant_id);
 
 ```bash
 # Start full stack
-docker compose -f infra/docker-compose.yml up -d
+docker compose -f infra/docker-compose.yml -f infra/docker-compose.dev.yml up -d
 
-# Backend only (dev)
+# Backend only (hot reload)
 cd backend && uvicorn app.main:app --reload --port 8000
 
 # Station app (dev)
@@ -280,70 +279,56 @@ cd backend && python scripts/seed.py
 
 ---
 
-## Navigation
-
-Before writing any code, read these files:
+## Reference Docs
 
 | File | Read when |
 |------|-----------|
-| [`architecture/README.md`](architecture/README.md) | Changing how something fundamentally works |
-| [`architecture/adr/`](architecture/adr/) | Before overriding an existing decision |
 | [`docs/conventions.md`](docs/conventions.md) | Before writing any new file |
 | [`docs/patterns.md`](docs/patterns.md) | Before scaffolding any new endpoint, model, or component |
 | [`docs/workflows.md`](docs/workflows.md) | Before running dev commands |
 | [`docs/event-schema.md`](docs/event-schema.md) | Before touching event types |
 | [`docs/failure-modes.md`](docs/failure-modes.md) | Before changing error handling or degradation behaviour |
 
-## Custom Commands
+---
 
-| Command | Purpose |
-|---------|---------|
-| `/new-event-type` | Add a new event type end-to-end |
-| `/new-endpoint` | Scaffold a new API endpoint |
-| `/new-model` | Create model + Alembic migration |
-| `/new-alert` | Add an alert to the SSE stream + dashboard |
-| `/check-patterns` | Verify code follows project conventions |
-| `/seed-dev` | Reset and reseed dev database |
-| `/adr` | Create a new Architecture Decision Record |
+## Development Guidelines
 
-## Claude Code Guidelines
-
-### When writing backend code
+### Backend
 
 - Use `async`/`await` throughout — no synchronous DB calls ever
-- All events go through Redis Streams first, PostgreSQL second (see ADR-003)
+- All events go through Redis Streams first, PostgreSQL second
 - Every event POST returns `202 Accepted` — not `201`
-- Every DB query includes `tenant_id` filter — no exceptions (see ADR-006)
+- Every DB query includes `tenant_id` filter — no exceptions
 - Use `structlog` for structured logging — not `print`, not `logging`
 - Catch only exceptions you can handle; let others propagate
 
-### When writing station-app code
+### Station App
 
-- **IndexedDB first, always.** `enqueue()` runs before any `fetch()` — no exceptions (see ADR-002)
+- **IndexedDB first, always.** `enqueue()` runs before any `fetch()` — no exceptions
 - Worker sees confirmation **before** network response — optimistic UI
-- No blocking spinners. If loading state is needed, it must be non-blocking
+- No blocking spinners — loading state must be non-blocking
 - All interactive elements ≥ 64px height — wet hands, gloves
-- Station app has one screen. No routing, no menus, no navigation
+- Station app has one screen: no routing, no menus, no navigation
 
-### When writing dashboard code
+### Dashboard
 
-- SSE, not WebSocket — dashboard is read-only (see ADR-004)
+- SSE, not WebSocket — dashboard is read-only
 - Each SSE event is a full snapshot — replace state, don't merge
 - Show operational state in plain language — not raw counts
 - Alerts (stuck batch, inactive station) are primary; charts are secondary
 
-### When making architecture decisions
+### Architecture decisions
 
-1. Read the relevant ADR first — the decision may already be made
+1. Read existing docs before changing how something fundamentally works
 2. Reliability > Features — every time
-3. Offline capability is non-negotiable — no feature degrades station function
-4. Voice is augmentation only (see ADR-008) — never make it required
-5. If no ADR exists, run `/adr` to document the decision before implementing
+3. Offline capability is non-negotiable — no feature may degrade station function
+4. Voice is augmentation only — never make it required
+5. Document architecture decisions in `docs/` before implementing
 
 ### Do NOT
 
 - Build a general-purpose ERP or inventory system
-- Add authentication to station devices (see ADR-005)
+- Add authentication to station devices
 - Use ORM lazy loading — always explicit `joinedload` or separate queries
 - Add animations or transitions to station app — latency perception matters
 - Make any feature that requires a worker to navigate a menu
@@ -355,8 +340,6 @@ Before writing any code, read these files:
 ---
 
 ## Observability Targets
-
-Track these metrics in Prometheus/Grafana:
 
 | Metric | Alert Threshold |
 |--------|----------------|

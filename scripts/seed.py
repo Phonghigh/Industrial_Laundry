@@ -1,4 +1,9 @@
-"""Dev data seeder. Creates default tenant, stations, and sample batches."""
+"""Dev data seeder — inserts stations and sample batches.
+
+Run AFTER migrations:
+    alembic upgrade head
+    python scripts/seed.py
+"""
 
 import asyncio
 import uuid
@@ -6,8 +11,7 @@ from datetime import datetime, timezone
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.database import AsyncSessionLocal, engine
-from app.models.base import Base
+from app.core.database import AsyncSessionLocal
 from app.models.batch import Batch
 from app.models.event import OperationalEvent
 from app.models.station import Station
@@ -26,9 +30,6 @@ STATIONS = [
 
 
 async def seed():
-    async with engine.begin() as conn:
-        await conn.run_sync(Base.metadata.create_all)
-
     async with AsyncSessionLocal() as db:
         station_ids = []
         for name, order in STATIONS:
